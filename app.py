@@ -15,7 +15,7 @@ load_dotenv()
 # Google OAuth config
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
 GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
-DEFAULT_REDIRECT_URI = "http://localhost:5000/auth/google/callback"
+DEFAULT_REDIRECT_URI = "https://backend-1-y7sg.onrender.com/auth/google/callback"
 
 TOKEN_URI = "https://oauth2.googleapis.com/token"
 USER_INFO_URI = "https://www.googleapis.com/oauth2/v2/userinfo"
