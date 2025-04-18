@@ -3,3 +3,4 @@ flask-cors
 psycopg2
 requests
 python-dotenv
+gunicorn
