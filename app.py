@@ -98,9 +98,14 @@ def initialize_database():
         conn.close()
 
 # Call this when the app starts
-@app.before_first_request
-def setup_database():
-    initialize_database()
+database_initialized = False
+
+@app.before_request
+def setup_database_before_request():
+    global database_initialized
+    if not database_initialized:
+        initialize_database()
+        database_initialized = True
 # Store Google token in PostgreSQL
 def store_token(email, access_token):
     conn = get_db_connection()
