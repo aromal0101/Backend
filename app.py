@@ -36,7 +36,71 @@ def get_db_connection():
         password=DB_PASSWORD
     )
     return conn
+# Add this to app.py
+def initialize_database():
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        # Create tables if they don't exist
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS gtokens (
+                email VARCHAR(255) PRIMARY KEY,access_token TEXT
+            );
+            
+            CREATE TABLE IF NOT EXISTS players (
+                email VARCHAR(255) PRIMARY KEY,
+                points INTEGER DEFAULT 0,
+                last_login TIMESTAMP,
+                FOREIGN KEY (email) REFERENCES gtokens (email)
+            );
+            
+            CREATE TABLE IF NOT EXISTS tiles (
+                email VARCHAR(255),
+                position_x FLOAT,
+                position_y FLOAT,
+                position_z FLOAT,
+                tile_type VARCHAR(100) NOT NULL,
+                last_updated TIMESTAMP,
+                PRIMARY KEY (email, position_x, position_y, position_z),
+                FOREIGN KEY (email) REFERENCES gtokens (email)
+            );
+            
+            CREATE TABLE IF NOT EXISTS player_positions (
+                email VARCHAR(255) PRIMARY KEY,
+                position_x FLOAT NOT NULL,
+                position_y FLOAT NOT NULL,
+                position_z FLOAT NOT NULL,
+                last_updated TIMESTAMP,
+                FOREIGN KEY (email) REFERENCES gtokens (email)
+            );
+            
+            CREATE TABLE IF NOT EXISTS player_xp (
+                email VARCHAR(255) PRIMARY KEY,
+                current_level INTEGER DEFAULT 1,
+                total_xp INTEGER DEFAULT 0,
+                FOREIGN KEY (email) REFERENCES gtokens (email)
+            );
+            
+            CREATE TABLE IF NOT EXISTS inventory_items (
+               id SERIAL PRIMARY KEY,
+                email VARCHAR(255),
+                item_name VARCHAR(100) NOT NULL,
+                quantity INTEGER NOT NULL,
+                FOREIGN KEY (email) REFERENCES gtokens (email)
+            );
+        """)
+        conn.commit()
+        print("Database initialized successfully")
+    except Exception as e:
+        print(f"Error initializing database: {e}")
+    finally:
+        cur.close()
+        conn.close()
 
+# Call this when the app starts
+@app.before_first_request
+def setup_database():
+    initialize_database()
 # Store Google token in PostgreSQL
 def store_token(email, access_token):
     conn = get_db_connection()
@@ -203,67 +267,107 @@ def load_player_position(email):
         return None, None, None
 
 # Save player data and tile changes
+# Example for save_game endpoint
 @app.route('/save_game', methods=['POST'])
 def save_game():
-    data = request.json
-    email = data.get('email')
-    access_token = data.get('token')
-    
-    # Verify token matches what we have in database
-    conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT access_token FROM gtokens WHERE email = %s", (email,))
-    result = cur.fetchone()
-    
-    if not result or result[0] != access_token:
+    try:
+        data = request.json
+        email = data.get('email')
+        access_token = data.get('token')
+        
+        # Verify token matches what we have in database
+        conn = get_db_connection()
+        cur = conn.cursor()
+        try:
+            cur.execute("SELECT access_token FROM gtokens WHERE email = %s", (email,))
+            result = cur.fetchone()
+            
+            if not result or result[0] != access_token:
+                return jsonify({"error": "Unauthorized", "details": "Invalid token"}), 401
+            
+            # Token is valid, save player data
+            points = data.get('points', 0)
+            player_pos_x = data.get('player_position_x')
+            player_pos_y = data.get('player_position_y')
+            player_pos_z = data.get('player_position_z')
+            
+            # Save or update player record
+            cur.execute("""
+                INSERT INTO players (email, points, last_login)
+                VALUES (%s, %s, CURRENT_TIMESTAMP)
+                ON CONFLICT (email)
+                DO UPDATE SET 
+                    points = %s,
+                    last_login = CURRENT_TIMESTAMP
+            """, (email, points, points))
+            
+            # Save player position if provided
+            if player_pos_x is not None and player_pos_y is not None:
+                save_player_position(email, player_pos_x, player_pos_y, player_pos_z)
+            
+            # Process tile data
+            tile_data = data.get('tile_data', [])
+            for tile in tile_data:
+                tile_name = tile.get('tileName')
+                pos_x = tile.get('x')
+                pos_y = tile.get('y')
+                pos_z = tile.get('z')
+                
+                # Insert or update each tile
+                cur.execute("""
+                    INSERT INTO tiles (email, position_x, position_y, position_z, tile_type, last_updated)
+                    VALUES (%s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+                    ON CONFLICT (email, position_x, position_y, position_z)
+                    DO UPDATE SET 
+                        tile_type = %s,
+                        last_updated = CURRENT_TIMESTAMP
+                """, (email, pos_x, pos_y, pos_z, tile_name, tile_name))
+            
+            conn.commit()
+            print(f"Game saved for {email}: {len(tile_data)} tiles, points: {points}")
+            return jsonify({"success": True})
+            
+        except Exception as e:
+            conn.rollback()
+            print(f"Error saving game data: {e}")
+            return jsonify({"error": "Database error", "details": str(e)}), 500
+        finally:
+            cur.close()
+            conn.close()
+    except Exception as e:
+        print(f"Error processing save_game request: {e}")
+        return jsonify({"error": "Request error", "details": str(e)}), 400
+
+
+# Add this to app.py
+@app.route('/test_db', methods=['GET'])
+def test_db():
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT 1")
+        result = cur.fetchone()
         cur.close()
         conn.close()
-        return jsonify({"error": "Unauthorized"}), 401
-    
-    # Token is valid, save player data
-    points = data.get('points', 0)
-    player_pos_x = data.get('player_position_x')
-    player_pos_y = data.get('player_position_y')
-    player_pos_z = data.get('player_position_z')
-    
-    # Save or update player record
-    cur.execute("""
-        INSERT INTO players (email, points, last_login)
-        VALUES (%s, %s, CURRENT_TIMESTAMP)
-        ON CONFLICT (email)
-        DO UPDATE SET 
-            points = %s,
-            last_login = CURRENT_TIMESTAMP
-    """, (email, points, points))
-    
-    # Save player position if provided
-    if player_pos_x is not None and player_pos_y is not None:
-        save_player_position(email, player_pos_x, player_pos_y, player_pos_z)
-    
-    # Process tile data
-    tile_data = data.get('tile_data', [])
-    for tile in tile_data:
-        tile_name = tile.get('tileName')
-        pos_x = tile.get('x')
-        pos_y = tile.get('y')
-        pos_z = tile.get('z')
         
-        # Insert or update each tile
-        cur.execute("""
-            INSERT INTO tiles (email, position_x, position_y, position_z, tile_type, last_updated)
-            VALUES (%s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
-            ON CONFLICT (email, position_x, position_y, position_z)
-            DO UPDATE SET 
-                tile_type = %s,
-                last_updated = CURRENT_TIMESTAMP
-        """, (email, pos_x, pos_y, pos_z, tile_name, tile_name))
-    
-    conn.commit()
-    cur.close()
-    conn.close()
-    
-    return jsonify({"success": True})
-
+        tables = []
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'")
+        for table in cur.fetchall():
+            tables.append(table[0])
+        cur.close()
+        conn.close()
+        
+        return jsonify({
+            "status": "Database connection successful",
+            "tables": tables
+        })
+    except Exception as e:
+        return jsonify({
+            "status": "Database connection failed",
+            "error": str(e)
+        }), 500
 # Load player data and tile changes
 @app.route('/load_game', methods=['POST'])
 def load_game():
@@ -515,30 +619,55 @@ def load_xp():
 # Add inventory save endpoint
 @app.route('/save_inventory', methods=['POST'])
 def save_inventory():
-    data = request.json
-    email = data.get('email')
-    access_token = data.get('token')
-    
-    # Verify token
-    conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT access_token FROM gtokens WHERE email = %s", (email,))
-    result = cur.fetchone()
-    
-    if not result or result[0] != access_token:
-        cur.close()
-        conn.close()
-        return jsonify({"error": "Unauthorized"}), 401
-    
-    # Token is valid, save inventory data
-    inventory_items = data.get('inventory_items', [])
-    save_inventory_items(email, inventory_items)
-    
-    cur.close()
-    conn.close()
-    
-    return jsonify({"success": True})
-
+    try:
+        data = request.json
+        email = data.get('email')
+        access_token = data.get('token')
+        
+        # Verify token
+        conn = get_db_connection()
+        cur = conn.cursor()
+        try:
+            cur.execute("SELECT access_token FROM gtokens WHERE email = %s", (email,))
+            result = cur.fetchone()
+            
+            if not result or result[0] != access_token:
+                return jsonify({"error": "Unauthorized", "details": "Invalid token"}), 401
+            
+            # Token is valid, save inventory data
+            inventory_items = data.get('inventory_items', [])
+            
+            # First delete any existing items for this user
+            cur.execute("DELETE FROM inventory_items WHERE email = %s", (email,))
+            
+            # Then insert all current items
+            item_count = 0
+            for item in inventory_items:
+                item_name = item.get('itemName')
+                quantity = item.get('quantity', 0)
+                
+                if quantity > 0:  # Only save items with quantity > 0
+                    cur.execute("""
+                        INSERT INTO inventory_items (email, item_name, quantity)
+                        VALUES (%s, %s, %s)
+                    """, (email, item_name, quantity))
+                    item_count += 1
+            
+            conn.commit()
+            print(f"Saved {item_count} inventory items for {email}")
+            
+            return jsonify({"success": True})
+            
+        except Exception as e:
+            conn.rollback()
+            print(f"Error saving inventory: {e}")
+            return jsonify({"error": "Database error", "details": str(e)}), 500
+        finally:
+            cur.close()
+            conn.close()
+    except Exception as e:
+        print(f"Error processing save_inventory request: {e}")
+        return jsonify({"error": "Request error", "details": str(e)}), 400
 # Add inventory load endpoint
 @app.route('/load_inventory', methods=['POST'])
 def load_inventory():
